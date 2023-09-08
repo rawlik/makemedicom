@@ -1,5 +1,6 @@
 import os
 import sys
+import datetime
 import argparse
 import logging
 from typing import Tuple
@@ -38,15 +39,10 @@ def normalise_for_dicom(
     dtyperange = float(np.iinfo(dtype).max) - float(np.iinfo(dtype).min)
     dtypemin = float(np.iinfo(dtype).min)
 
-    logging.debug(f"datamin {datamin}, dtypemin {dtypemin}")
-
     slope = dtyperange / datarange
     offset = dtypemin - datamin * slope
 
     scaled = np.array(a * slope + offset).astype(dtype)
-    logging.debug(f"dtypemin {np.iinfo(dtype).min}, dtypemin {np.iinfo(dtype).max}")
-    logging.debug(f"datamin {scaled.min()}, datamax {scaled.max()}")
-    logging.debug(f"data dtype {scaled.dtype}")
 
     # the inverse transform
     # a = (scaled - offset) / slope
@@ -58,10 +54,6 @@ def normalise_for_dicom(
 
 
 def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dataset:
-    # ds = pydicom.dataset.FileDataset(
-    #     filename, {}, file_meta=file_meta, preamble=b"\0" * 128
-    # )
-    # ds = pydicom.dcmread(pydicom.data.get_testdata_file("CT_small.dcm"))
     ds = pydicom.dataset.Dataset()
 
     ds.ensure_file_meta()
@@ -80,6 +72,10 @@ def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dat
     ds.Modality = "CT"
 
     ds.StudyInstanceUID = pydicom.uid.generate_uid()
+    dt = datetime.datetime.now()
+    ds.StudyDate = dt.strftime("%Y%m%d")
+    ds.StudyTime = dt.strftime("%H%M%S.%f")
+    ds.StudyID = "1"
     ds.SeriesInstanceUID = pydicom.uid.generate_uid()
     ds.SeriesNumber = 1
     ds.AcquisitionNumber = 1
@@ -109,14 +105,9 @@ def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dat
     ds.PixelRepresentation = 1
     ds.PixelSpacing = "0.1\\0.1"
     ds.PixelData = scaled.tobytes()
-    logging.debug(f"{slope:f}"[:16])
     ds.RescaleSlope = f"{slope:f}"[:16]
     ds.RescaleIntercept = f"{intercept:f}"[:16]
-    # logging.debug(f"RescaleSlope: {ds.RescaleSlope}")
-    # logging.debug(f"RescaleIntercept: {ds.RescaleIntercept}")
 
-    # Add the data elements -- not trying to set all required here. Check DICOM
-    # standard
     ds.PatientName = "Anonymous^Patient"
     ds.PatientID = "123456"
 
@@ -128,6 +119,11 @@ def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dat
 def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Dataset:
     studyInstanceUID = pydicom.uid.generate_uid()
     seriesInstanceUID = pydicom.uid.generate_uid()
+
+    dt = datetime.datetime.now()
+    studyDate = dt.strftime("%Y%m%d")
+    studyTime = dt.strftime("%H%M%S.%f")
+    studyID = "1"
 
     dataspan = d.min(), d.max()
 
@@ -156,7 +152,12 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
         ds.Modality = "CT"
 
+        ds.PatientName = "Anonymous^Patient"
+        ds.PatientID = "123456"
         ds.StudyInstanceUID = studyInstanceUID
+        ds.StudyDate = studyDate
+        ds.StudyTime = studyTime
+        ds.StudyID = studyID
         ds.SeriesInstanceUID = seriesInstanceUID
         ds.SeriesNumber = 1
         ds.AcquisitionNumber = 1
@@ -188,16 +189,8 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.PixelRepresentation = 1
         ds.PixelSpacing = "0.1\\0.1"
         ds.PixelData = scaled.tobytes()
-        logging.debug(f"{slope:f}"[:16])
         ds.RescaleSlope = f"{slope:f}"[:16]
         ds.RescaleIntercept = f"{intercept:f}"[:16]
-        # logging.debug(f"RescaleSlope: {ds.RescaleSlope}")
-        # logging.debug(f"RescaleIntercept: {ds.RescaleIntercept}")
-
-        # Add the data elements -- not trying to set all required here. Check DICOM
-        # standard
-        ds.PatientName = "Anonymous^Patient"
-        ds.PatientID = "123456"
 
         ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
 
@@ -241,9 +234,11 @@ if __name__ == "__main__":
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
                     outpath = os.path.join(dirname, fbasename, name)
                     if len(d.shape) == 2:
+                        logging.info("Writing image {filename}/{name}")
                         os.makedirs(os.path.dirname(outpath), exist_ok=True)
                         array_to_dicom(d, dtype, outpath + ".dcm")
                     elif len(d.shape) == 3:
+                        logging.info("Writing volume {filename}/{name}")
                         os.makedirs(outpath, exist_ok=True)
                         # we need to read the whole array to know the
                         # minimum and maximum values
