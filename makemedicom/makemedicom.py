@@ -127,6 +127,7 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
     studyDate = dt.strftime("%Y%m%d")
     studyTime = dt.strftime("%H%M%S.%f")
     studyID = "1"
+    voxelsize = 0.1
 
     dataspan = d.min(), d.max()
 
@@ -188,8 +189,9 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.BitsAllocated = bitsize
         ds.HighBit = (bitsize - 1) if endianess == "little" else 0
         ds.PixelRepresentation = 1
-        ds.PixelSpacing = "0.1\\0.1"
-        ds.SliceThickness = "0.1"
+        ds.PixelSpacing = [voxelsize, voxelsize]
+        ds.SliceThickness = voxelsize
+        ds.SpacingBetweenSlices = voxelsize
         ds.PixelData = scaled.tobytes()
         ds.PixelPaddingValue = 0
         # ds.RescaleSlope = f"{slope:f}"[:16]
