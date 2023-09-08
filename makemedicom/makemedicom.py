@@ -56,6 +56,9 @@ def normalise_for_dicom(
 def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dataset:
     ds = pydicom.dataset.Dataset()
 
+    preamble = pydicom.dcmread(pydicom.data.get_testdata_file("CT_small.dcm")).preamble
+    ds.preamble = preamble
+
     ds.ensure_file_meta()
     ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
     ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
@@ -105,10 +108,10 @@ def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dat
     ds.PixelRepresentation = 1
     ds.PixelSpacing = "0.1\\0.1"
     ds.PixelData = scaled.tobytes()
-    ds.RescaleSlope = f"{slope:f}"[:16]
-    ds.RescaleIntercept = f"{intercept:f}"[:16]
+    # ds.RescaleSlope = f"{slope:f}"[:16]
+    # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
-    ds.PatientName = "Anonymous^Patient"
+    ds.PatientName = "Anonymous Patient"
     ds.PatientID = "123456"
 
     ds.save_as(filename)
@@ -128,14 +131,12 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
     dataspan = d.min(), d.max()
 
     for i in range(d.shape[0]):
-        if i > 10:
-            break
-
-        # ds = pydicom.dataset.FileDataset(
-        #     filename, {}, file_meta=file_meta, preamble=b"\0" * 128
-        # )
-        # ds = pydicom.dcmread(pydicom.data.get_testdata_file("CT_small.dcm"))
         ds = pydicom.dataset.Dataset()
+
+        preamble = pydicom.dcmread(
+            pydicom.data.get_testdata_file("CT_small.dcm")
+        ).preamble
+        ds.preamble = preamble
 
         ds.ensure_file_meta()
         ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
@@ -152,7 +153,7 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
         ds.Modality = "CT"
 
-        ds.PatientName = "Anonymous^Patient"
+        ds.PatientName = "Anonymous Patient"
         ds.PatientID = "123456"
         ds.StudyInstanceUID = studyInstanceUID
         ds.StudyDate = studyDate
@@ -188,9 +189,11 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.HighBit = (bitsize - 1) if endianess == "little" else 0
         ds.PixelRepresentation = 1
         ds.PixelSpacing = "0.1\\0.1"
+        ds.SliceThickness = "0.1"
         ds.PixelData = scaled.tobytes()
-        ds.RescaleSlope = f"{slope:f}"[:16]
-        ds.RescaleIntercept = f"{intercept:f}"[:16]
+        ds.PixelPaddingValue = 0
+        # ds.RescaleSlope = f"{slope:f}"[:16]
+        # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
         ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
 
@@ -234,11 +237,11 @@ if __name__ == "__main__":
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
                     outpath = os.path.join(dirname, fbasename, name)
                     if len(d.shape) == 2:
-                        logging.info("Writing image {filename}/{name}")
+                        logging.info(f"Writing image {filename}/{name}")
                         os.makedirs(os.path.dirname(outpath), exist_ok=True)
                         array_to_dicom(d, dtype, outpath + ".dcm")
                     elif len(d.shape) == 3:
-                        logging.info("Writing volume {filename}/{name}")
+                        logging.info(f"Writing volume {filename}/{name}")
                         os.makedirs(outpath, exist_ok=True)
                         # we need to read the whole array to know the
                         # minimum and maximum values
