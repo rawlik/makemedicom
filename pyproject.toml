@@ -1,11 +1,7 @@
 [project]
 name = "makemedicom"
 version = "0.0.1"
-dependencies = [
-    "numpy",
-    "pydicom==2.4.2",
-    "h5py==3.9.0",
-]
+dependencies = ["numpy", "pydicom==2.4.2", "h5py==3.9.0"]
 
 [project.scripts]
-makemedicom = "makemedicom.makemedicom:hello"
+makemedicom = "makemedicom.makemedicom:entrypoint"

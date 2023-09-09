@@ -200,7 +200,7 @@ def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Data
         ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
 
 
-if __name__ == "__main__":
+def entrypoint():
     parser = argparse.ArgumentParser(
         prog="makemedicom",
         description="Converts image files to DICOM. At the moment the following input formats are supported: hdf5.",
@@ -251,3 +251,7 @@ if __name__ == "__main__":
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
+
+
+if __name__ == "__main__":
+    entrypoint()
