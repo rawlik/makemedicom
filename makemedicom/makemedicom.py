@@ -11,7 +11,10 @@ import h5py
 import pydicom
 
 
-__version__ = importlib.metadata.version("makemedicom")
+try:
+    __version__ = importlib.metadata.version("makemedicom")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "dev"
 
 
 def hello():
@@ -231,10 +234,11 @@ def entrypoint():
 
     dtype = np.int16
 
+    fmt = "%(asctime)s [%(levelname)s] %(message)s"
     if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, format=fmt)
     else:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.INFO, format=fmt)
 
     for filename in args.file:
         dirname = os.path.dirname(filename)
