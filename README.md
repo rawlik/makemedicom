@@ -1,6 +1,8 @@
 # makemedicom
 
 ## Installation
+First install pipx: https://pypa.github.io/pipx/
+
 ```bash
 pipx install git+https://github.com/rawlik/makemedicom.git
 ```
@@ -14,5 +16,5 @@ makemedicom myfile.h5
 ```bash
 git clone git@github.com:rawlik/makemedicom.git
 cd makemedicom
-pip install --force .
+pipx install --force .
 ```
