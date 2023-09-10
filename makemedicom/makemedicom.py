@@ -57,150 +57,157 @@ def normalise_for_dicom(
     return invslope, invintercept, scaled
 
 
-def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dataset:
-    ds = pydicom.dataset.Dataset()
+def set_study_time(ds: pydicom.Dataset, dt: datetime.datetime = None):
+    if dt is None:
+        dt = datetime.datetime.now()
 
-    preamble = pydicom.dcmread(pydicom.data.get_testdata_file("CT_small.dcm")).preamble
-    ds.preamble = preamble
-
-    ds.ensure_file_meta()
-    ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
-    ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
-    ds.file_meta.TransferSyntaxUID = pydicom.uid.ImplicitVRLittleEndian
-    ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
-    ds.file_meta.ImplementationVersionName = "v0.0.1"
-    ds.file_meta.SourceApplicationEntityTitle = "makemedicom"
-    pydicom.dataset.validate_file_meta(ds.file_meta, enforce_standard=True)
-
-    ds.SpecificCharacterSet = "ISO_IR 100"
-    ds.ImageType = "ORIGINAL\\PRIMARY\\AXIAL"
-    ds.SOPClassUID = pydicom.uid.CTImageStorage
-    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
-    ds.Modality = "CT"
-
-    ds.StudyInstanceUID = pydicom.uid.generate_uid()
-    dt = datetime.datetime.now()
     ds.StudyDate = dt.strftime("%Y%m%d")
     ds.StudyTime = dt.strftime("%H%M%S.%f")
-    ds.StudyID = "1"
-    ds.SeriesInstanceUID = pydicom.uid.generate_uid()
-    ds.SeriesNumber = 1
-    ds.AcquisitionNumber = 1
-    ds.InstanceNumber = 1
 
-    slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
 
-    endianess = {
-        ">": "big",
-        "<": "little",
-        "=": sys.byteorder,
-        "|": "not applicable",
-    }[np.dtype(dtype).byteorder]
+def create_dicom_dataset():
+    # endianess = {
+    #     ">": "big",
+    #     "<": "little",
+    #     "=": sys.byteorder,
+    #     "|": "not applicable",
+    # }[np.dtype(dtype).byteorder]
+    endianess = "little"
+
+    ds = pydicom.dataset.Dataset()
+    ds.ensure_file_meta()
+
+    # set the preamble from a valid DICOM file
+    preamble = pydicom.dcmread(pydicom.data.get_testdata_file("CT_small.dcm")).preamble
+    ds.preamble = preamble
 
     # Set the transfer syntax
     ds.is_little_endian = endianess == "little"
     ds.is_implicit_VR = True
+    ds.file_meta.TransferSyntaxUID = pydicom.uid.ImplicitVRLittleEndian
 
-    ds.Rows = scaled.shape[-2]
-    ds.Columns = scaled.shape[-1]
+    # encoding
+    ds.SpecificCharacterSet = "ISO_IR 100"
+
+    # the source application is makemedicom
+    ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
+    ds.file_meta.ImplementationVersionName = "v" + __version__
+    ds.file_meta.SourceApplicationEntityTitle = "makemedicom"
+
+    ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+
+    ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+
+    # default patient
+    ds.PatientName = "Anonymous Patient"
+    ds.PatientID = "123456"
+
+    # study
+    set_study_time(ds)
+    ds.StudyInstanceUID = pydicom.uid.generate_uid()
+    ds.StudyID = "1"
+
+    # series
+    ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+    ds.SeriesNumber = 1
+
+    ds.AcquisitionNumber = 1
+    ds.InstanceNumber = 1
+
+    # default interpretation
     ds.PhotometricInterpretation = "MONOCHROME2"
+
+    # default image type
+    ds.ImageType = "ORIGINAL\\PRIMARY"
+
+    # default pixel values
     ds.SamplesPerPixel = 1
-    bitsize = scaled.dtype.itemsize * 8
+    ds.PixelRepresentation = 1
+    ds.PixelPaddingValue = 0
+
+    return ds
+
+
+def validate_dataset(ds: pydicom.Dataset):
+    pydicom.dataset.validate_file_meta(ds.file_meta, enforce_standard=True)
+
+
+def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="little"):
+    ds.Rows = d.shape[-2]
+    ds.Columns = d.shape[-1]
+    bitsize = d.dtype.itemsize * 8
     ds.BitsStored = bitsize
     ds.BitsAllocated = bitsize
     ds.HighBit = (bitsize - 1) if endianess == "little" else 0
     ds.PixelRepresentation = 1
-    ds.PixelSpacing = "0.1\\0.1"
-    ds.PixelData = scaled.tobytes()
+    ds.PixelData = d.tobytes()
+
+
+def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dataset:
+    ds = create_dicom_dataset()
+
+    # TODO make radiography
+    make_dataset_CT(ds)
+
+    slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
+
+    set_pixel_data_from_array(ds, scaled)
+
     # ds.RescaleSlope = f"{slope:f}"[:16]
     # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
-    ds.PatientName = "Anonymous Patient"
-    ds.PatientID = "123456"
-
+    validate_dataset(ds)
     ds.save_as(filename)
 
     return ds
 
 
-def volume_to_dicom(d: np.ndarray, dtype: np.dtype, folder: str) -> pydicom.Dataset:
+def make_dataset_CT(ds: pydicom.Dataset, voxelsize=1):
+    ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+    ds.ImageType = "ORIGINAL\\PRIMARY\\AXIAL"
+    ds.Modality = "CT"
+
+    ds.PixelSpacing = [voxelsize, voxelsize]
+    ds.SliceThickness = voxelsize
+    ds.SpacingBetweenSlices = voxelsize
+
+
+def volume_to_dicom(
+    d: np.ndarray, dtype: np.dtype, folder: str, voxelsize=1
+) -> pydicom.Dataset:
     studyInstanceUID = pydicom.uid.generate_uid()
     seriesInstanceUID = pydicom.uid.generate_uid()
 
-    dt = datetime.datetime.now()
-    studyDate = dt.strftime("%Y%m%d")
-    studyTime = dt.strftime("%H%M%S.%f")
+    study_datetime = datetime.datetime.now()
     studyID = "1"
-    voxelsize = 0.1
 
     dataspan = d.min(), d.max()
 
     for i in range(d.shape[0]):
-        ds = pydicom.dataset.Dataset()
+        ds = create_dicom_dataset()
 
-        preamble = pydicom.dcmread(
-            pydicom.data.get_testdata_file("CT_small.dcm")
-        ).preamble
-        ds.preamble = preamble
+        make_dataset_CT(ds, voxelsize=voxelsize)
 
-        ds.ensure_file_meta()
-        ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
-        ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
-        ds.file_meta.TransferSyntaxUID = pydicom.uid.ImplicitVRLittleEndian
-        ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
-        ds.file_meta.ImplementationVersionName = "v0.0.1"
-        ds.file_meta.SourceApplicationEntityTitle = "makemedicom"
-        pydicom.dataset.validate_file_meta(ds.file_meta, enforce_standard=True)
-
-        ds.SpecificCharacterSet = "ISO_IR 100"
-        ds.ImageType = "ORIGINAL\\PRIMARY\\AXIAL"
-        ds.SOPClassUID = pydicom.uid.CTImageStorage
-        ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
-        ds.Modality = "CT"
-
-        ds.PatientName = "Anonymous Patient"
-        ds.PatientID = "123456"
+        # all datasets are part of the same study and series
         ds.StudyInstanceUID = studyInstanceUID
-        ds.StudyDate = studyDate
-        ds.StudyTime = studyTime
         ds.StudyID = studyID
+        set_study_time(ds, study_datetime)
         ds.SeriesInstanceUID = seriesInstanceUID
-        ds.SeriesNumber = 1
-        ds.AcquisitionNumber = 1
         ds.InstanceNumber = i
 
         slope, intercept, scaled = normalise_for_dicom(
             d[i, ...], dtype=dtype, dataspan=dataspan
         )
 
-        endianess = {
-            ">": "big",
-            "<": "little",
-            "=": sys.byteorder,
-            "|": "not applicable",
-        }[np.dtype(dtype).byteorder]
+        set_pixel_data_from_array(ds, scaled)
 
-        # Set the transfer syntax
-        ds.is_little_endian = endianess == "little"
-        ds.is_implicit_VR = True
-
-        ds.Rows = scaled.shape[-2]
-        ds.Columns = scaled.shape[-1]
-        ds.PhotometricInterpretation = "MONOCHROME2"
-        ds.SamplesPerPixel = 1
-        bitsize = scaled.dtype.itemsize * 8
-        ds.BitsStored = bitsize
-        ds.BitsAllocated = bitsize
-        ds.HighBit = (bitsize - 1) if endianess == "little" else 0
-        ds.PixelRepresentation = 1
-        ds.PixelSpacing = [voxelsize, voxelsize]
-        ds.SliceThickness = voxelsize
-        ds.SpacingBetweenSlices = voxelsize
-        ds.PixelData = scaled.tobytes()
-        ds.PixelPaddingValue = 0
         # ds.RescaleSlope = f"{slope:f}"[:16]
         # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
+        validate_dataset(ds)
         ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
 
 
