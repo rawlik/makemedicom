@@ -268,6 +268,8 @@ def entrypoint():
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
+        else:
+            logging.error(f"File format {extension} not implemented.")
 
 
 if __name__ == "__main__":
