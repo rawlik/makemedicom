@@ -60,12 +60,29 @@ def normalise_for_dicom(
     return invslope, invintercept, scaled
 
 
-def set_study_time(ds: pydicom.Dataset, dt: datetime.datetime = None):
-    if dt is None:
-        dt = datetime.datetime.now()
+class Study:
+    def __init__(
+        self,
+        description: str = "study",
+        studyid: str = "1",
+        dt: datetime.datetime = None,
+    ) -> None:
+        self.StudyDescription = description
+        self.StudyInstanceUID = pydicom.uid.generate_uid()
+        self.StudyID = studyid
 
-    ds.StudyDate = dt.strftime("%Y%m%d")
-    ds.StudyTime = dt.strftime("%H%M%S.%f")
+        if dt is None:
+            dt = datetime.datetime.now()
+
+        self.StudyDate = dt.strftime("%Y%m%d")
+        self.StudyTime = dt.strftime("%H%M%S.%f")
+
+    def set_in_dataset(self, ds: pydicom.Dataset):
+        ds.StudyDescription = self.StudyDescription
+        ds.StudyInstanceUID = self.StudyInstanceUID
+        ds.StudyID = self.StudyID
+        ds.StudyDate = self.StudyDate
+        ds.StudyTime = self.StudyTime
 
 
 def create_dicom_dataset():
@@ -107,10 +124,9 @@ def create_dicom_dataset():
     ds.PatientName = "Anonymous Patient"
     ds.PatientID = "123456"
 
-    # study
-    set_study_time(ds)
-    ds.StudyInstanceUID = pydicom.uid.generate_uid()
-    ds.StudyID = "1"
+    # default Study
+    study = Study()
+    study.set_in_dataset(ds)
 
     # series
     ds.SeriesInstanceUID = pydicom.uid.generate_uid()
@@ -148,11 +164,16 @@ def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="lit
     ds.PixelData = d.tobytes()
 
 
-def image_to_dicom(d: np.ndarray, dtype: np.dtype, filename: str) -> pydicom.Dataset:
+def image_to_dicom(
+    d: np.ndarray, dtype: np.dtype, filename: str, study: Study = None
+) -> pydicom.Dataset:
     ds = create_dicom_dataset()
 
     # TODO make radiography
     make_dataset_CT(ds)
+
+    if study is not None:
+        study.set_in_dataset(ds)
 
     slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
 
@@ -179,13 +200,16 @@ def make_dataset_CT(ds: pydicom.Dataset, voxelsize=1):
 
 
 def volume_to_dicom(
-    d: np.ndarray, dtype: np.dtype, folder: str, voxelsize=1
+    d: np.ndarray,
+    dtype: np.dtype,
+    folder: str,
+    voxelsize: float = 1,
+    study: Study = None,
 ) -> pydicom.Dataset:
-    studyInstanceUID = pydicom.uid.generate_uid()
-    seriesInstanceUID = pydicom.uid.generate_uid()
+    if study is None:
+        study = Study()
 
-    study_datetime = datetime.datetime.now()
-    studyID = "1"
+    seriesInstanceUID = pydicom.uid.generate_uid()
 
     dataspan = d.min(), d.max()
 
@@ -195,9 +219,7 @@ def volume_to_dicom(
         make_dataset_CT(ds, voxelsize=voxelsize)
 
         # all datasets are part of the same study and series
-        ds.StudyInstanceUID = studyInstanceUID
-        ds.StudyID = studyID
-        set_study_time(ds, study_datetime)
+        study.set_in_dataset(ds)
         ds.SeriesInstanceUID = seriesInstanceUID
         ds.InstanceNumber = i
 
@@ -228,6 +250,13 @@ def entrypoint():
         help="The files to read.",
     )
 
+    parser.add_argument(
+        "-s",
+        "--study",
+        type=str,
+        help="Treat all datasets as a part of a single study with this id.",
+    )
+
     parser.add_argument("-d", "--debug", action="store_true")
 
     args = parser.parse_args()
@@ -239,6 +268,11 @@ def entrypoint():
         logging.basicConfig(level=logging.DEBUG, format=fmt)
     else:
         logging.basicConfig(level=logging.INFO, format=fmt)
+
+    if args.study is not None:
+        study = Study(studyid=args.study)
+    else:
+        study = None
 
     for filename in args.file:
         dirname = os.path.dirname(filename)
@@ -258,13 +292,13 @@ def entrypoint():
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
                         os.makedirs(os.path.dirname(outpath), exist_ok=True)
-                        image_to_dicom(d, dtype, outpath + ".dcm")
+                        image_to_dicom(d, dtype, outpath + ".dcm", study=study)
                     elif len(d.shape) == 3:
                         logging.info(f"Writing volume {filename}/{name}")
                         os.makedirs(outpath, exist_ok=True)
                         # we need to read the whole array to know the
                         # minimum and maximum values
-                        volume_to_dicom(d[...], dtype, outpath)
+                        volume_to_dicom(d[...], dtype, outpath, study=study)
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
