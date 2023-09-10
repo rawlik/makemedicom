@@ -257,6 +257,12 @@ def entrypoint():
         help="Treat all datasets as a part of a single study with this id.",
     )
 
+    parser.add_argument(
+        "--group2study",
+        action="store_true",
+        help="Use hdf5 group names as study.",
+    )
+
     parser.add_argument("-d", "--debug", action="store_true")
 
     args = parser.parse_args()
@@ -289,6 +295,10 @@ def entrypoint():
                 if isinstance(d, h5py.Dataset):
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
                     outpath = os.path.join(dirname, fbasename, name)
+
+                    if args.group2study and (args.study is None):
+                        study = Study(studyid=name)
+
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
                         os.makedirs(os.path.dirname(outpath), exist_ok=True)
