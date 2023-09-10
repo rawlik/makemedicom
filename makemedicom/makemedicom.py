@@ -4,10 +4,14 @@ import datetime
 import argparse
 import logging
 from typing import Tuple
+import importlib.metadata
 
 import numpy as np
 import h5py
 import pydicom
+
+
+__version__ = importlib.metadata.version("makemedicom")
 
 
 def hello():
