@@ -243,7 +243,7 @@ def entrypoint():
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
                         os.makedirs(os.path.dirname(outpath), exist_ok=True)
-                        array_to_dicom(d, dtype, outpath + ".dcm")
+                        image_to_dicom(d, dtype, outpath + ".dcm")
                     elif len(d.shape) == 3:
                         logging.info(f"Writing volume {filename}/{name}")
                         os.makedirs(outpath, exist_ok=True)
