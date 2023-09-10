@@ -222,6 +222,8 @@ def entrypoint():
 
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
 
     for filename in args.file:
         dirname = os.path.dirname(filename)
