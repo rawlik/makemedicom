@@ -10,6 +10,7 @@ import numpy as np
 import h5py
 import pydicom
 import pydicom.fileset
+from pydicom.pixel_data_handlers.util import apply_modality_lut
 
 
 try:
@@ -36,29 +37,36 @@ def normalise_for_dicom(
 
     ref. https://dicom.innolitics.com/ciods/digital-x-ray-image/dx-image/00281052
     """
-    if dataspan is None:
-        datarange = np.max(a).astype(np.float64) - np.min(a).astype(np.float64)
-        datarange *= 0.99
-        datamin = np.min(a).astype(np.float64)
+    if np.issubdtype(dtype, np.integer):
+        if dataspan is None:
+            datamin = np.min(a).astype(np.float64)
+            datamax = np.max(a).astype(np.float64)
+        else:
+            datamin = dataspan[0]
+            datamax = dataspan[1]
+
+        logging.debug(f"datamin {datamin}, datamax {datamax}")
+        datarange = datamax - datamin
+        datarange *= 0.999
+
+        dtyperange = float(np.iinfo(dtype).max) - float(np.iinfo(dtype).min)
+        dtypemin = float(np.iinfo(dtype).min)
+
+        slope = dtyperange / datarange
+        logging.debug(f"dtyperange {dtyperange}, datarange {datarange}, slope {slope}")
+        offset = dtypemin - datamin * slope
+
+        scaled = np.array(a * slope + offset, dtype=dtype)
+
+        # the inverse transform
+        # a = (scaled - offset) / slope
+        # a = scaled / slope - offset / slope
+        invslope = 1 / slope
+        invintercept = -offset / slope
+
+        return invslope, invintercept, scaled
     else:
-        datamin = dataspan[0]
-        datarange = dataspan[1] - dataspan[0]
-
-    dtyperange = float(np.iinfo(dtype).max) - float(np.iinfo(dtype).min)
-    dtypemin = float(np.iinfo(dtype).min)
-
-    slope = dtyperange / datarange
-    offset = dtypemin - datamin * slope
-
-    scaled = np.array(a * slope + offset).astype(dtype)
-
-    # the inverse transform
-    # a = (scaled - offset) / slope
-    # a = scaled / slope - offset / slope
-    invslope = 1 / slope
-    invintercept = -offset / slope
-
-    return invslope, invintercept, scaled
+        return 1, 0, np.array(a).astype(dtype)
 
 
 class Study:
@@ -169,16 +177,30 @@ def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="lit
 def dicom_to_dicom(
     ds: pydicom.dataset.Dataset,
     filename: str,
+    dtype: str = None,
     study: Study = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
-    ds = create_dicom_dataset(ds)
+    if dtype is not None:
+        d = ds.pixel_array
+        slope, intercept, scaled = normalise_for_dicom(
+            apply_modality_lut(d, ds), dtype=dtype
+        )
+        ds = create_dicom_dataset(ds)
+        set_pixel_data_from_array(ds, scaled)
+        ds.RescaleSlope = f"{slope:f}"[:16]
+        ds.RescaleIntercept = f"{intercept:f}"[:16]
+    else:
+        ds = create_dicom_dataset(ds)
 
-    # TODO make radiography
-    make_dataset_CT(ds)
+    make_dataset_DigitalXRayImageStorageForPresentation(ds)
 
     if study is not None:
         study.set_in_dataset(ds)
+
+    rescaled = apply_modality_lut(ds.pixel_array, ds)
+    ds.WindowCenter = rescaled.mean()
+    ds.WindowWidth = rescaled.max() - rescaled.min()
 
     validate_dataset(ds)
 
@@ -199,8 +221,7 @@ def image_to_dicom(
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset()
 
-    # TODO make radiography
-    make_dataset_CT(ds)
+    make_dataset_DigitalXRayImageStorageForPresentation(ds)
 
     if study is not None:
         study.set_in_dataset(ds)
@@ -209,8 +230,12 @@ def image_to_dicom(
 
     set_pixel_data_from_array(ds, scaled)
 
-    # ds.RescaleSlope = f"{slope:f}"[:16]
-    # ds.RescaleIntercept = f"{intercept:f}"[:16]
+    ds.RescaleSlope = f"{slope:f}"[:16]
+    ds.RescaleIntercept = f"{intercept:f}"[:16]
+
+    rescaled = apply_modality_lut(ds.pixel_array, ds)
+    ds.WindowCenter = rescaled.mean()
+    ds.WindowWidth = rescaled.max() - rescaled.min()
 
     validate_dataset(ds)
 
@@ -233,6 +258,18 @@ def make_dataset_CT(ds: pydicom.Dataset, voxelsize=1):
     ds.SpacingBetweenSlices = voxelsize
 
 
+def make_dataset_DigitalXRayImageStorageForPresentation(
+    ds: pydicom.Dataset, pixelsize=1
+):
+    ds.file_meta.MediaStorageSOPClassUID = (
+        pydicom.uid.DigitalXRayImageStorageForPresentation
+    )
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+    ds.Modality = "DX"
+
+    ds.PixelSpacing = [pixelsize, pixelsize]
+
+
 def volume_to_dicom(
     d: np.ndarray,
     dtype: np.dtype,
@@ -246,7 +283,10 @@ def volume_to_dicom(
 
     seriesInstanceUID = pydicom.uid.generate_uid()
 
-    dataspan = d.min(), d.max()
+    datamean = d.mean()
+    datamin = d.min()
+    datamax = d.max()
+    dataspan = datamin, datamax
 
     datasets = []
 
@@ -266,8 +306,12 @@ def volume_to_dicom(
 
         set_pixel_data_from_array(ds, scaled)
 
-        # ds.RescaleSlope = f"{slope:f}"[:16]
-        # ds.RescaleIntercept = f"{intercept:f}"[:16]
+        ds.RescaleSlope = f"{slope:f}"[:16]
+        ds.RescaleIntercept = f"{intercept:f}"[:16]
+
+        rescaled = apply_modality_lut(ds.pixel_array, ds)
+        ds.WindowCenter = datamean
+        ds.WindowWidth = datamax - datamin
 
         validate_dataset(ds)
 
@@ -316,6 +360,13 @@ def entrypoint():
     )
 
     parser.add_argument(
+        "--dtype",
+        type=str,
+        default="<i2",
+        help="Convert the data to the given numpy dtype. Defaults to <i2.",
+    )
+
+    parser.add_argument(
         "--fileset",
         action="store_true",
         help="Save the files as a fileset creating a DICOMDIR file.",
@@ -325,7 +376,7 @@ def entrypoint():
 
     args = parser.parse_args()
 
-    dtype = np.int16
+    dtype = np.dtype(args.dtype)
 
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     if args.debug:
@@ -367,7 +418,9 @@ def entrypoint():
                     objectoutpath = os.path.join(fileoutpath, name)
 
                     if args.group2study and (args.study is None):
-                        study = Study(studyid=name)
+                        thisstudy = Study(studyid=name)
+                    else:
+                        thisstudy = study
 
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
@@ -375,7 +428,7 @@ def entrypoint():
                             d,
                             dtype,
                             objectoutpath + ".dcm",
-                            study=study,
+                            study=thisstudy,
                             fileset=fileset,
                         )
 
@@ -386,16 +439,24 @@ def entrypoint():
                         # we need to read the whole array to know the
                         # minimum and maximum values
                         volume_to_dicom(
-                            d[...], dtype, objectoutpath, study=study, fileset=fileset
+                            d[...],
+                            dtype,
+                            objectoutpath,
+                            study=thisstudy,
+                            fileset=fileset,
                         )
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
-        if extension in ["dcm"]:
+        elif extension in ["dcm"]:
             ds = pydicom.dcmread(filename)
 
             dicom_to_dicom(
-                ds=ds, filename=fileoutpath + ".dcm", study=study, fileset=fileset
+                ds=ds,
+                filename=fileoutpath + ".dcm",
+                study=study,
+                fileset=fileset,
+                dtype=dtype,
             )
 
             if fileset is not None:
