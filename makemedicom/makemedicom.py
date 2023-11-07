@@ -86,7 +86,7 @@ class Study:
         ds.StudyTime = self.StudyTime
 
 
-def create_dicom_dataset():
+def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
     # endianess = {
     #     ">": "big",
     #     "<": "little",
@@ -95,7 +95,8 @@ def create_dicom_dataset():
     # }[np.dtype(dtype).byteorder]
     endianess = "little"
 
-    ds = pydicom.dataset.Dataset()
+    if ds is None:
+        ds = pydicom.dataset.Dataset()
     ds.ensure_file_meta()
 
     # set the preamble from a valid DICOM file
@@ -163,6 +164,30 @@ def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="lit
     ds.HighBit = (bitsize - 1) if endianess == "little" else 0
     ds.PixelRepresentation = 1
     ds.PixelData = d.tobytes()
+
+
+def dicom_to_dicom(
+    ds: pydicom.dataset.Dataset,
+    filename: str,
+    study: Study = None,
+    fileset: pydicom.fileset.FileSet = None,
+) -> pydicom.Dataset:
+    ds = create_dicom_dataset(ds)
+
+    # TODO make radiography
+    make_dataset_CT(ds)
+
+    if study is not None:
+        study.set_in_dataset(ds)
+
+    validate_dataset(ds)
+
+    if fileset is None:
+        ds.save_as(filename)
+    else:
+        fileset.add(ds)
+
+    return ds
 
 
 def image_to_dicom(
@@ -270,6 +295,14 @@ def entrypoint():
     )
 
     parser.add_argument(
+        "-o",
+        "--outpath",
+        required=True,
+        type=str,
+        help="The output path.",
+    )
+
+    parser.add_argument(
         "-s",
         "--study",
         type=str,
@@ -286,12 +319,6 @@ def entrypoint():
         "--fileset",
         action="store_true",
         help="Save the files as a fileset creating a DICOMDIR file.",
-    )
-
-    parser.add_argument(
-        "--singleset",
-        type=str,
-        help="Create a single set as output with a given name. By default there is one per output",
     )
 
     parser.add_argument("-d", "--debug", action="store_true")
@@ -311,13 +338,15 @@ def entrypoint():
     else:
         study = None
 
-    if args.fileset and (args.singleset is not None):
+    if args.fileset:
         fileset = pydicom.fileset.FileSet()
+    else:
+        fileset = None
 
     for filename in args.file:
+        logging.info(f"Processing file {filename}")
         dirname = os.path.dirname(filename)
         basename = os.path.basename(filename)
-        logging.info(f"basename is {basename}")
 
         if "." in basename:
             fbasename, _, extension = basename.rpartition(".")
@@ -325,11 +354,10 @@ def entrypoint():
             logging.error(f"The file has no extension: {filename}")
             exit(1)
 
-        fileoutpath = os.path.join(dirname, fbasename)
-        os.makedirs(fileoutpath, exist_ok=True)
+        fileoutpath = os.path.join(args.outpath, fbasename)
 
-        if args.fileset and (args.singleset is None):
-            fileset = pydicom.fileset.FileSet()
+        if not args.fileset:
+            os.makedirs(fileoutpath, exist_ok=True)
 
         if extension in ["h5", "hdf5", "n5"]:
 
@@ -363,16 +391,20 @@ def entrypoint():
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
+        if extension in ["dcm"]:
+            ds = pydicom.dcmread(filename)
+
+            dicom_to_dicom(
+                ds=ds, filename=fileoutpath + ".dcm", study=study, fileset=fileset
+            )
+
+            if fileset is not None:
+                fileset.add(ds)
         else:
             logging.error(f"File format {extension} not implemented.")
 
-        if args.fileset and (args.singleset is None):
-            filesetpath = fileoutpath
-            logging.info(f"Writing fileset {filesetpath}")
-            fileset.write(filesetpath)
-
-    if args.fileset and (args.singleset is not None):
-        filesetpath = args.singleset
+    if args.fileset:
+        filesetpath = args.outpath
         logging.info(f"Writing fileset {filesetpath}")
         fileset.write(filesetpath)
 
