@@ -10,6 +10,7 @@ import numpy as np
 import h5py
 import pydicom
 import pydicom.fileset
+from pydicom.pixel_data_handlers.util import apply_modality_lut
 
 
 try:
@@ -36,29 +37,36 @@ def normalise_for_dicom(
 
     ref. https://dicom.innolitics.com/ciods/digital-x-ray-image/dx-image/00281052
     """
-    if dataspan is None:
-        datarange = np.max(a).astype(np.float64) - np.min(a).astype(np.float64)
-        datarange *= 0.99
-        datamin = np.min(a).astype(np.float64)
+    if np.issubdtype(dtype, np.integer):
+        if dataspan is None:
+            datamin = np.min(a).astype(np.float64)
+            datamax = np.max(a).astype(np.float64)
+        else:
+            datamin = dataspan[0]
+            datamax = dataspan[1]
+
+        logging.debug(f"datamin {datamin}, datamax {datamax}")
+        datarange = datamax - datamin
+        datarange *= 0.999
+
+        dtyperange = float(np.iinfo(dtype).max) - float(np.iinfo(dtype).min)
+        dtypemin = float(np.iinfo(dtype).min)
+
+        slope = dtyperange / datarange
+        logging.debug(f"dtyperange {dtyperange}, datarange {datarange}, slope {slope}")
+        offset = dtypemin - datamin * slope
+
+        scaled = np.array(a * slope + offset, dtype=dtype)
+
+        # the inverse transform
+        # a = (scaled - offset) / slope
+        # a = scaled / slope - offset / slope
+        invslope = 1 / slope
+        invintercept = -offset / slope
+
+        return invslope, invintercept, scaled
     else:
-        datamin = dataspan[0]
-        datarange = dataspan[1] - dataspan[0]
-
-    dtyperange = float(np.iinfo(dtype).max) - float(np.iinfo(dtype).min)
-    dtypemin = float(np.iinfo(dtype).min)
-
-    slope = dtyperange / datarange
-    offset = dtypemin - datamin * slope
-
-    scaled = np.array(a * slope + offset).astype(dtype)
-
-    # the inverse transform
-    # a = (scaled - offset) / slope
-    # a = scaled / slope - offset / slope
-    invslope = 1 / slope
-    invintercept = -offset / slope
-
-    return invslope, invintercept, scaled
+        return 1, 0, np.array(a).astype(dtype)
 
 
 class Study:
@@ -173,18 +181,26 @@ def dicom_to_dicom(
     study: Study = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
-    ds = create_dicom_dataset(ds)
-
     if dtype is not None:
         d = ds.pixel_array
-        d = d.astype(dtype)
-        slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
+        slope, intercept, scaled = normalise_for_dicom(
+            apply_modality_lut(d, ds), dtype=dtype
+        )
+        ds = create_dicom_dataset(ds)
         set_pixel_data_from_array(ds, scaled)
+        ds.RescaleSlope = f"{slope:f}"[:16]
+        ds.RescaleIntercept = f"{intercept:f}"[:16]
+    else:
+        ds = create_dicom_dataset(ds)
 
     make_dataset_DigitalXRayImageStorageForPresentation(ds)
 
     if study is not None:
         study.set_in_dataset(ds)
+
+    rescaled = apply_modality_lut(ds.pixel_array, ds)
+    ds.WindowCenter = rescaled.mean()
+    ds.WindowWidth = rescaled.max() - rescaled.min()
 
     validate_dataset(ds)
 
@@ -214,8 +230,12 @@ def image_to_dicom(
 
     set_pixel_data_from_array(ds, scaled)
 
-    # ds.RescaleSlope = f"{slope:f}"[:16]
-    # ds.RescaleIntercept = f"{intercept:f}"[:16]
+    ds.RescaleSlope = f"{slope:f}"[:16]
+    ds.RescaleIntercept = f"{intercept:f}"[:16]
+
+    rescaled = apply_modality_lut(ds.pixel_array, ds)
+    ds.WindowCenter = rescaled.mean()
+    ds.WindowWidth = rescaled.max() - rescaled.min()
 
     validate_dataset(ds)
 
@@ -263,7 +283,10 @@ def volume_to_dicom(
 
     seriesInstanceUID = pydicom.uid.generate_uid()
 
-    dataspan = d.min(), d.max()
+    datamean = d.mean()
+    datamin = d.min()
+    datamax = d.max()
+    dataspan = datamin, datamax
 
     datasets = []
 
@@ -283,8 +306,12 @@ def volume_to_dicom(
 
         set_pixel_data_from_array(ds, scaled)
 
-        # ds.RescaleSlope = f"{slope:f}"[:16]
-        # ds.RescaleIntercept = f"{intercept:f}"[:16]
+        ds.RescaleSlope = f"{slope:f}"[:16]
+        ds.RescaleIntercept = f"{intercept:f}"[:16]
+
+        rescaled = apply_modality_lut(ds.pixel_array, ds)
+        ds.WindowCenter = datamean
+        ds.WindowWidth = datamax - datamin
 
         validate_dataset(ds)
 
