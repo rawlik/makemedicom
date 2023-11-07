@@ -22,5 +22,5 @@ makemedicom myfile.h5
 ```bash
 git clone git@github.com:rawlik/makemedicom.git
 cd makemedicom
-pipx install --force .
+pipx install --force --editable .
 ```
