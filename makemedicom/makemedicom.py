@@ -3,12 +3,13 @@ import sys
 import datetime
 import argparse
 import logging
-from typing import Tuple
+from typing import Tuple, List
 import importlib.metadata
 
 import numpy as np
 import h5py
 import pydicom
+import pydicom.fileset
 
 
 try:
@@ -85,7 +86,7 @@ class Study:
         ds.StudyTime = self.StudyTime
 
 
-def create_dicom_dataset():
+def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
     # endianess = {
     #     ">": "big",
     #     "<": "little",
@@ -94,7 +95,8 @@ def create_dicom_dataset():
     # }[np.dtype(dtype).byteorder]
     endianess = "little"
 
-    ds = pydicom.dataset.Dataset()
+    if ds is None:
+        ds = pydicom.dataset.Dataset()
     ds.ensure_file_meta()
 
     # set the preamble from a valid DICOM file
@@ -164,8 +166,36 @@ def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="lit
     ds.PixelData = d.tobytes()
 
 
+def dicom_to_dicom(
+    ds: pydicom.dataset.Dataset,
+    filename: str,
+    study: Study = None,
+    fileset: pydicom.fileset.FileSet = None,
+) -> pydicom.Dataset:
+    ds = create_dicom_dataset(ds)
+
+    # TODO make radiography
+    make_dataset_CT(ds)
+
+    if study is not None:
+        study.set_in_dataset(ds)
+
+    validate_dataset(ds)
+
+    if fileset is None:
+        ds.save_as(filename)
+    else:
+        fileset.add(ds)
+
+    return ds
+
+
 def image_to_dicom(
-    d: np.ndarray, dtype: np.dtype, filename: str, study: Study = None
+    d: np.ndarray,
+    dtype: np.dtype,
+    filename: str,
+    study: Study = None,
+    fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset()
 
@@ -183,7 +213,11 @@ def image_to_dicom(
     # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
     validate_dataset(ds)
-    ds.save_as(filename)
+
+    if fileset is None:
+        ds.save_as(filename)
+    else:
+        fileset.add(ds)
 
     return ds
 
@@ -205,13 +239,16 @@ def volume_to_dicom(
     folder: str,
     voxelsize: float = 1,
     study: Study = None,
-) -> pydicom.Dataset:
+    fileset: pydicom.fileset.FileSet = None,
+) -> List[pydicom.Dataset]:
     if study is None:
         study = Study()
 
     seriesInstanceUID = pydicom.uid.generate_uid()
 
     dataspan = d.min(), d.max()
+
+    datasets = []
 
     for i in range(d.shape[0]):
         ds = create_dicom_dataset()
@@ -233,14 +270,21 @@ def volume_to_dicom(
         # ds.RescaleIntercept = f"{intercept:f}"[:16]
 
         validate_dataset(ds)
-        ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
+
+        if fileset is None:
+            ds.save_as(os.path.join(folder, f"{i:08d}.dcm"))
+        else:
+            fileset.add(ds)
+
+        datasets.append(ds)
+
+    return datasets
 
 
 def entrypoint():
     parser = argparse.ArgumentParser(
         prog="makemedicom",
         description="Converts image files to DICOM. At the moment the following input formats are supported: hdf5.",
-        epilog="Text at the bottom of help",
     )
 
     parser.add_argument(
@@ -248,6 +292,14 @@ def entrypoint():
         type=str,
         nargs="+",
         help="The files to read.",
+    )
+
+    parser.add_argument(
+        "-o",
+        "--outpath",
+        required=True,
+        type=str,
+        help="The output path.",
     )
 
     parser.add_argument(
@@ -261,6 +313,12 @@ def entrypoint():
         "--group2study",
         action="store_true",
         help="Use hdf5 group names as study.",
+    )
+
+    parser.add_argument(
+        "--fileset",
+        action="store_true",
+        help="Save the files as a fileset creating a DICOMDIR file.",
     )
 
     parser.add_argument("-d", "--debug", action="store_true")
@@ -280,40 +338,75 @@ def entrypoint():
     else:
         study = None
 
+    if args.fileset:
+        fileset = pydicom.fileset.FileSet()
+    else:
+        fileset = None
+
     for filename in args.file:
+        logging.info(f"Processing file {filename}")
         dirname = os.path.dirname(filename)
         basename = os.path.basename(filename)
+
         if "." in basename:
             fbasename, _, extension = basename.rpartition(".")
         else:
-            logging.error("The file has no extension.")
-            exit
+            logging.error(f"The file has no extension: {filename}")
+            exit(1)
+
+        fileoutpath = os.path.join(args.outpath, fbasename)
+
+        if not args.fileset:
+            os.makedirs(fileoutpath, exist_ok=True)
 
         if extension in ["h5", "hdf5", "n5"]:
 
             def visit_hdf5_object(name, d):
                 if isinstance(d, h5py.Dataset):
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
-                    outpath = os.path.join(dirname, fbasename, name)
+                    objectoutpath = os.path.join(fileoutpath, name)
 
                     if args.group2study and (args.study is None):
                         study = Study(studyid=name)
 
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
-                        os.makedirs(os.path.dirname(outpath), exist_ok=True)
-                        image_to_dicom(d, dtype, outpath + ".dcm", study=study)
+                        image_to_dicom(
+                            d,
+                            dtype,
+                            objectoutpath + ".dcm",
+                            study=study,
+                            fileset=fileset,
+                        )
+
                     elif len(d.shape) == 3:
                         logging.info(f"Writing volume {filename}/{name}")
-                        os.makedirs(outpath, exist_ok=True)
+                        if not args.fileset:
+                            os.makedirs(objectoutpath, exist_ok=True)
                         # we need to read the whole array to know the
                         # minimum and maximum values
-                        volume_to_dicom(d[...], dtype, outpath, study=study)
+                        volume_to_dicom(
+                            d[...], dtype, objectoutpath, study=study, fileset=fileset
+                        )
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
+        if extension in ["dcm"]:
+            ds = pydicom.dcmread(filename)
+
+            dicom_to_dicom(
+                ds=ds, filename=fileoutpath + ".dcm", study=study, fileset=fileset
+            )
+
+            if fileset is not None:
+                fileset.add(ds)
         else:
             logging.error(f"File format {extension} not implemented.")
+
+    if args.fileset:
+        filesetpath = args.outpath
+        logging.info(f"Writing fileset {filesetpath}")
+        fileset.write(filesetpath)
 
 
 if __name__ == "__main__":
