@@ -169,13 +169,19 @@ def set_pixel_data_from_array(ds: pydicom.Dataset, d: np.ndarray, endianess="lit
 def dicom_to_dicom(
     ds: pydicom.dataset.Dataset,
     filename: str,
+    dtype: str = None,
     study: Study = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset(ds)
 
-    # TODO make radiography
-    make_dataset_CT(ds)
+    if dtype is not None:
+        d = ds.pixel_array
+        d = d.astype(dtype)
+        slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
+        set_pixel_data_from_array(ds, scaled)
+
+    make_dataset_DigitalXRayImageStorageForPresentation(ds)
 
     if study is not None:
         study.set_in_dataset(ds)
@@ -199,8 +205,7 @@ def image_to_dicom(
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset()
 
-    # TODO make radiography
-    make_dataset_CT(ds)
+    make_dataset_DigitalXRayImageStorageForPresentation(ds)
 
     if study is not None:
         study.set_in_dataset(ds)
@@ -231,6 +236,18 @@ def make_dataset_CT(ds: pydicom.Dataset, voxelsize=1):
     ds.PixelSpacing = [voxelsize, voxelsize]
     ds.SliceThickness = voxelsize
     ds.SpacingBetweenSlices = voxelsize
+
+
+def make_dataset_DigitalXRayImageStorageForPresentation(
+    ds: pydicom.Dataset, pixelsize=1
+):
+    ds.file_meta.MediaStorageSOPClassUID = (
+        pydicom.uid.DigitalXRayImageStorageForPresentation
+    )
+    ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID
+    ds.Modality = "DX"
+
+    ds.PixelSpacing = [pixelsize, pixelsize]
 
 
 def volume_to_dicom(
@@ -316,6 +333,13 @@ def entrypoint():
     )
 
     parser.add_argument(
+        "--dtype",
+        type=str,
+        default="<i2",
+        help="Convert the data to the given numpy dtype. Defaults to <i2.",
+    )
+
+    parser.add_argument(
         "--fileset",
         action="store_true",
         help="Save the files as a fileset creating a DICOMDIR file.",
@@ -325,7 +349,7 @@ def entrypoint():
 
     args = parser.parse_args()
 
-    dtype = np.int16
+    dtype = np.dtype(args.dtype)
 
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     if args.debug:
@@ -367,7 +391,9 @@ def entrypoint():
                     objectoutpath = os.path.join(fileoutpath, name)
 
                     if args.group2study and (args.study is None):
-                        study = Study(studyid=name)
+                        thisstudy = Study(studyid=name)
+                    else:
+                        thisstudy = study
 
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
@@ -375,7 +401,7 @@ def entrypoint():
                             d,
                             dtype,
                             objectoutpath + ".dcm",
-                            study=study,
+                            study=thisstudy,
                             fileset=fileset,
                         )
 
@@ -386,16 +412,24 @@ def entrypoint():
                         # we need to read the whole array to know the
                         # minimum and maximum values
                         volume_to_dicom(
-                            d[...], dtype, objectoutpath, study=study, fileset=fileset
+                            d[...],
+                            dtype,
+                            objectoutpath,
+                            study=thisstudy,
+                            fileset=fileset,
                         )
 
             with h5py.File(filename, "r") as file:
                 file.visititems(visit_hdf5_object)
-        if extension in ["dcm"]:
+        elif extension in ["dcm"]:
             ds = pydicom.dcmread(filename)
 
             dicom_to_dicom(
-                ds=ds, filename=fileoutpath + ".dcm", study=study, fileset=fileset
+                ds=ds,
+                filename=fileoutpath + ".dcm",
+                study=study,
+                fileset=fileset,
+                dtype=dtype,
             )
 
             if fileset is not None:
