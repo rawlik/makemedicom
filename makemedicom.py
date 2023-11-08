@@ -325,6 +325,100 @@ def volume_to_dicom(
     return datasets
 
 
+def process_files(
+    files,
+    outpath,
+    dtype: np.dtype,
+    studyid: str = None,
+    group2study: bool = False,
+    create_fileset: bool = False,
+):
+    if studyid is not None:
+        study = Study(studyid=studyid)
+    else:
+        study = None
+
+    if fileset:
+        fileset = pydicom.fileset.FileSet()
+    else:
+        fileset = None
+
+    for filename in (files,):
+        logging.info(f"Processing file {filename}")
+        dirname = os.path.dirname(filename)
+        basename = os.path.basename(filename)
+
+        if "." in basename:
+            fbasename, _, extension = basename.rpartition(".")
+        else:
+            logging.error(f"The file has no extension: {filename}")
+            exit(1)
+
+        fileoutpath = os.path.join(outpath, fbasename)
+
+        if not create_fileset:
+            os.makedirs(fileoutpath, exist_ok=True)
+
+        if extension in ["h5", "hdf5", "n5"]:
+
+            def visit_hdf5_object(name, d):
+                if isinstance(d, h5py.Dataset):
+                    logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
+                    objectoutpath = os.path.join(fileoutpath, name)
+
+                    if group2study and (studyid is None):
+                        thisstudy = Study(studyid=name)
+                    else:
+                        thisstudy = study
+
+                    if len(d.shape) == 2:
+                        logging.info(f"Writing image {filename}/{name}")
+                        image_to_dicom(
+                            d,
+                            dtype,
+                            objectoutpath + ".dcm",
+                            study=thisstudy,
+                            fileset=fileset,
+                        )
+
+                    elif len(d.shape) == 3:
+                        logging.info(f"Writing volume {filename}/{name}")
+                        if not create_fileset:
+                            os.makedirs(objectoutpath, exist_ok=True)
+                        # we need to read the whole array to know the
+                        # minimum and maximum values
+                        volume_to_dicom(
+                            d[...],
+                            dtype,
+                            objectoutpath,
+                            study=thisstudy,
+                            fileset=fileset,
+                        )
+
+            with h5py.File(filename, "r") as file:
+                file.visititems(visit_hdf5_object)
+        elif extension in ["dcm"]:
+            ds = pydicom.dcmread(filename)
+
+            dicom_to_dicom(
+                ds=ds,
+                filename=fileoutpath + ".dcm",
+                study=study,
+                fileset=fileset,
+                dtype=dtype,
+            )
+
+            if fileset is not None:
+                fileset.add(ds)
+        else:
+            logging.error(f"File format {extension} not implemented.")
+
+    if create_fileset:
+        filesetpath = outpath
+        logging.info(f"Writing fileset {filesetpath}")
+        fileset.write(filesetpath)
+
+
 def entrypoint():
     parser = argparse.ArgumentParser(
         prog="makemedicom",
@@ -376,98 +470,20 @@ def entrypoint():
 
     args = parser.parse_args()
 
-    dtype = np.dtype(args.dtype)
-
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, format=fmt)
     else:
         logging.basicConfig(level=logging.INFO, format=fmt)
 
-    if args.study is not None:
-        study = Study(studyid=args.study)
-    else:
-        study = None
-
-    if args.fileset:
-        fileset = pydicom.fileset.FileSet()
-    else:
-        fileset = None
-
-    for filename in args.file:
-        logging.info(f"Processing file {filename}")
-        dirname = os.path.dirname(filename)
-        basename = os.path.basename(filename)
-
-        if "." in basename:
-            fbasename, _, extension = basename.rpartition(".")
-        else:
-            logging.error(f"The file has no extension: {filename}")
-            exit(1)
-
-        fileoutpath = os.path.join(args.outpath, fbasename)
-
-        if not args.fileset:
-            os.makedirs(fileoutpath, exist_ok=True)
-
-        if extension in ["h5", "hdf5", "n5"]:
-
-            def visit_hdf5_object(name, d):
-                if isinstance(d, h5py.Dataset):
-                    logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
-                    objectoutpath = os.path.join(fileoutpath, name)
-
-                    if args.group2study and (args.study is None):
-                        thisstudy = Study(studyid=name)
-                    else:
-                        thisstudy = study
-
-                    if len(d.shape) == 2:
-                        logging.info(f"Writing image {filename}/{name}")
-                        image_to_dicom(
-                            d,
-                            dtype,
-                            objectoutpath + ".dcm",
-                            study=thisstudy,
-                            fileset=fileset,
-                        )
-
-                    elif len(d.shape) == 3:
-                        logging.info(f"Writing volume {filename}/{name}")
-                        if not args.fileset:
-                            os.makedirs(objectoutpath, exist_ok=True)
-                        # we need to read the whole array to know the
-                        # minimum and maximum values
-                        volume_to_dicom(
-                            d[...],
-                            dtype,
-                            objectoutpath,
-                            study=thisstudy,
-                            fileset=fileset,
-                        )
-
-            with h5py.File(filename, "r") as file:
-                file.visititems(visit_hdf5_object)
-        elif extension in ["dcm"]:
-            ds = pydicom.dcmread(filename)
-
-            dicom_to_dicom(
-                ds=ds,
-                filename=fileoutpath + ".dcm",
-                study=study,
-                fileset=fileset,
-                dtype=dtype,
-            )
-
-            if fileset is not None:
-                fileset.add(ds)
-        else:
-            logging.error(f"File format {extension} not implemented.")
-
-    if args.fileset:
-        filesetpath = args.outpath
-        logging.info(f"Writing fileset {filesetpath}")
-        fileset.write(filesetpath)
+    process_files(
+        files=args.file,
+        outpath=args.outpath,
+        dtype=np.dtype(args.dtype),
+        studyid=args.study,
+        group2study=args.group2study,
+        create_fileset=args.fileset,
+    )
 
 
 if __name__ == "__main__":
