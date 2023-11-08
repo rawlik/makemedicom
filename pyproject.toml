@@ -4,5 +4,8 @@ readme = "README.md"
 version = "0.0.4"
 dependencies = ["numpy", "pydicom==2.4.2", "h5py==3.9.0"]
 
+[tool.setuptools]
+py-modules = ["makemedicom"]
+
 [project.scripts]
-makemedicom = "makemedicom.makemedicom:entrypoint"
+makemedicom = "makemedicom:entrypoint"
