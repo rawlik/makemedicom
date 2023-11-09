@@ -86,6 +86,8 @@ class Study:
         self.StudyDate = dt.strftime("%Y%m%d")
         self.StudyTime = dt.strftime("%H%M%S.%f")
 
+        self.series = []
+
     def set_in_dataset(self, ds: pydicom.Dataset):
         ds.StudyDescription = self.StudyDescription
         ds.StudyInstanceUID = self.StudyInstanceUID
@@ -93,22 +95,23 @@ class Study:
         ds.StudyDate = self.StudyDate
         ds.StudyTime = self.StudyTime
 
+    def add_series(self, description: str = "") -> Series:
+        number = len(self.series) + 1
+        series = Series(description=description, seriesnumber=number)
+        self.series.append(series)
+
+        return series
+
 
 class Series:
-    number = 1
-
     def __init__(
         self,
         description: str = "",
-        seriesnumber: str = None,
+        seriesnumber: str = "1",
     ) -> None:
         self.SeriesDescription = description
         self.SeriesInstanceUID = pydicom.uid.generate_uid()
-        if seriesnumber is None:
-            self.SeriesNumber = Series.number
-            Series.number += 1
-        else:
-            self.SeriesNumber = seriesnumber
+        self.SeriesNumber = seriesnumber
 
     def set_in_dataset(self, ds: pydicom.Dataset):
         ds.SeriesDescription = self.SeriesDescription
@@ -161,7 +164,7 @@ def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
     study.set_in_dataset(ds)
 
     # series
-    series = Series()
+    series = study.add_series()
     series.set_in_dataset(ds)
 
     ds.AcquisitionNumber = 1
@@ -313,7 +316,7 @@ def volume_to_dicom(
         study = Study()
 
     if series is None:
-        series = Series()
+        series = study.add_series()
 
     datamean = d.mean()
     datamin = d.min()
@@ -402,7 +405,7 @@ def process_files(
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
                     objectoutpath = os.path.join(fileoutpath, name)
 
-                    series = Series(description=basename)
+                    series = study.add_series(description=basename)
                     series.SeriesDescription += "/"
                     series.SeriesDescription += name
 
@@ -437,7 +440,7 @@ def process_files(
         elif extension in ["dcm"]:
             ds = pydicom.dcmread(filename)
 
-            series = Series(description=os.path.basename(filename))
+            series = study.add_series(description=os.path.basename(filename))
 
             dicom_to_dicom(
                 ds=ds,
