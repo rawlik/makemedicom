@@ -72,7 +72,7 @@ def normalise_for_dicom(
 class Study:
     def __init__(
         self,
-        description: str = "study",
+        description: str = "",
         studyid: str = "1",
         dt: datetime.datetime = None,
     ) -> None:
@@ -92,6 +92,28 @@ class Study:
         ds.StudyID = self.StudyID
         ds.StudyDate = self.StudyDate
         ds.StudyTime = self.StudyTime
+
+
+class Series:
+    number = 1
+
+    def __init__(
+        self,
+        description: str = "",
+        seriesnumber: str = None,
+    ) -> None:
+        self.SeriesDescription = description
+        self.SeriesInstanceUID = pydicom.uid.generate_uid()
+        if seriesnumber is None:
+            self.SeriesNumber = Series.number
+            Series.number += 1
+        else:
+            self.SeriesNumber = seriesnumber
+
+    def set_in_dataset(self, ds: pydicom.Dataset):
+        ds.SeriesDescription = self.SeriesDescription
+        ds.SeriesInstanceUID = self.SeriesInstanceUID
+        ds.SeriesNumber = self.SeriesNumber
 
 
 def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
@@ -139,8 +161,8 @@ def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
     study.set_in_dataset(ds)
 
     # series
-    ds.SeriesInstanceUID = pydicom.uid.generate_uid()
-    ds.SeriesNumber = 1
+    series = Series()
+    series.set_in_dataset(ds)
 
     ds.AcquisitionNumber = 1
     ds.InstanceNumber = 1
@@ -179,6 +201,7 @@ def dicom_to_dicom(
     filename: str,
     dtype: str = None,
     study: Study = None,
+    series: Series = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
     if dtype is not None:
@@ -197,6 +220,9 @@ def dicom_to_dicom(
 
     if study is not None:
         study.set_in_dataset(ds)
+
+    if series is not None:
+        series.set_in_dataset(ds)
 
     rescaled = apply_modality_lut(ds.pixel_array, ds)
     ds.WindowCenter = rescaled.mean()
@@ -217,6 +243,7 @@ def image_to_dicom(
     dtype: np.dtype,
     filename: str,
     study: Study = None,
+    series: Series = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset()
@@ -225,6 +252,9 @@ def image_to_dicom(
 
     if study is not None:
         study.set_in_dataset(ds)
+
+    if series is not None:
+        series.set_in_dataset(ds)
 
     slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
 
@@ -276,12 +306,14 @@ def volume_to_dicom(
     folder: str,
     voxelsize: float = 1,
     study: Study = None,
+    series: Series = None,
     fileset: pydicom.fileset.FileSet = None,
 ) -> List[pydicom.Dataset]:
     if study is None:
         study = Study()
 
-    seriesInstanceUID = pydicom.uid.generate_uid()
+    if series is None:
+        series = Series()
 
     datamean = d.mean()
     datamin = d.min()
@@ -297,7 +329,7 @@ def volume_to_dicom(
 
         # all datasets are part of the same study and series
         study.set_in_dataset(ds)
-        ds.SeriesInstanceUID = seriesInstanceUID
+        series.set_in_dataset(ds)
         ds.InstanceNumber = i
 
         slope, intercept, scaled = normalise_for_dicom(
@@ -329,24 +361,28 @@ def process_files(
     files,
     outpath,
     dtype: np.dtype,
-    studyid: str = None,
-    group2study: bool = False,
+    file2study: bool = False,
+    studydescription: str = None,
     create_fileset: bool = False,
 ):
-    if studyid is not None:
-        study = Study(studyid=studyid)
-    else:
-        study = None
+    if not file2study:
+        study = Study()
 
-    if fileset:
+        if studydescription is not None:
+            study.StudyDescription = studydescription
+
+    if create_fileset:
         fileset = pydicom.fileset.FileSet()
     else:
         fileset = None
 
-    for filename in (files,):
+    for filename in files:
         logging.info(f"Processing file {filename}")
         dirname = os.path.dirname(filename)
         basename = os.path.basename(filename)
+
+        if file2study:
+            study = Study(description=basename)
 
         if "." in basename:
             fbasename, _, extension = basename.rpartition(".")
@@ -366,10 +402,9 @@ def process_files(
                     logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
                     objectoutpath = os.path.join(fileoutpath, name)
 
-                    if group2study and (studyid is None):
-                        thisstudy = Study(studyid=name)
-                    else:
-                        thisstudy = study
+                    series = Series(description=basename)
+                    series.SeriesDescription += "/"
+                    series.SeriesDescription += name
 
                     if len(d.shape) == 2:
                         logging.info(f"Writing image {filename}/{name}")
@@ -377,7 +412,8 @@ def process_files(
                             d,
                             dtype,
                             objectoutpath + ".dcm",
-                            study=thisstudy,
+                            series=series,
+                            study=study,
                             fileset=fileset,
                         )
 
@@ -391,7 +427,8 @@ def process_files(
                             d[...],
                             dtype,
                             objectoutpath,
-                            study=thisstudy,
+                            series=series,
+                            study=study,
                             fileset=fileset,
                         )
 
@@ -400,10 +437,13 @@ def process_files(
         elif extension in ["dcm"]:
             ds = pydicom.dcmread(filename)
 
+            series = Series(description=os.path.basename(filename))
+
             dicom_to_dicom(
                 ds=ds,
                 filename=fileoutpath + ".dcm",
                 study=study,
+                series=series,
                 fileset=fileset,
                 dtype=dtype,
             )
@@ -441,16 +481,16 @@ def entrypoint():
     )
 
     parser.add_argument(
-        "-s",
-        "--study",
-        type=str,
-        help="Treat all datasets as a part of a single study with this id.",
+        "--file2study",
+        type=bool,
+        default=False,
+        help="Create one study per file. By default create a single study for all files.",
     )
 
     parser.add_argument(
-        "--group2study",
-        action="store_true",
-        help="Use hdf5 group names as study.",
+        "--studydescription",
+        type=str,
+        help="Description of the study.",
     )
 
     parser.add_argument(
@@ -480,8 +520,8 @@ def entrypoint():
         files=args.file,
         outpath=args.outpath,
         dtype=np.dtype(args.dtype),
-        studyid=args.study,
-        group2study=args.group2study,
+        file2study=args.file2study,
+        studydescription=args.studydescription,
         create_fileset=args.fileset,
     )
 
