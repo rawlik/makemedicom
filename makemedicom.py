@@ -27,13 +27,18 @@ def hello():
 
 
 def normalise_for_dicom(
-    a: np.ndarray, dtype: np.dtype, dataspan=None
+    a: np.ndarray,
+    dtype: np.dtype,
+    dataspan: Tuple[float, float] = None,
+    ds: pydicom.Dataset = None,
 ) -> Tuple[float, float, np.ndarray]:
     """
     The value b in the relationship between stored values (SV)
     in Pixel Data (7FE0,0010) and the output units specified in Rescale Type (0028,1054).
 
     Output units = m*SV + b.
+
+    If the dataset ds is given, set the RescaleSlope and RescaleIntercept attributes.
 
     ref. https://dicom.innolitics.com/ciods/digital-x-ray-image/dx-image/00281052
     """
@@ -63,6 +68,10 @@ def normalise_for_dicom(
         # a = scaled / slope - offset / slope
         invslope = 1 / slope
         invintercept = -offset / slope
+
+        if ds is not None:
+            ds.RescaleSlope = f"{invslope:e}"
+            ds.RescaleIntercept = f"{invintercept:e}"
 
         return invslope, invintercept, scaled
     else:
@@ -248,6 +257,7 @@ def image_to_dicom(
     study: Study = None,
     series: Series = None,
     fileset: pydicom.fileset.FileSet = None,
+    **attrs,
 ) -> pydicom.Dataset:
     ds = create_dicom_dataset()
 
@@ -259,16 +269,16 @@ def image_to_dicom(
     if series is not None:
         series.set_in_dataset(ds)
 
-    slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype)
+    slope, intercept, scaled = normalise_for_dicom(d, dtype=dtype, ds=ds)
 
     set_pixel_data_from_array(ds, scaled)
-
-    ds.RescaleSlope = f"{slope:f}"[:16]
-    ds.RescaleIntercept = f"{intercept:f}"[:16]
 
     rescaled = apply_modality_lut(ds.pixel_array, ds)
     ds.WindowCenter = rescaled.mean()
     ds.WindowWidth = rescaled.max() - rescaled.min()
+
+    for k in attrs:
+        setattr(ds, k, attrs[k])
 
     validate_dataset(ds)
 
@@ -311,6 +321,7 @@ def volume_to_dicom(
     study: Study = None,
     series: Series = None,
     fileset: pydicom.fileset.FileSet = None,
+    **attrs,
 ) -> List[pydicom.Dataset]:
     if study is None:
         study = Study()
@@ -336,17 +347,16 @@ def volume_to_dicom(
         ds.InstanceNumber = i
 
         slope, intercept, scaled = normalise_for_dicom(
-            d[i, ...], dtype=dtype, dataspan=dataspan
+            d[i, ...], dtype=dtype, dataspan=dataspan, ds=ds
         )
 
         set_pixel_data_from_array(ds, scaled)
 
-        ds.RescaleSlope = f"{slope:f}"[:16]
-        ds.RescaleIntercept = f"{intercept:f}"[:16]
-
-        rescaled = apply_modality_lut(ds.pixel_array, ds)
         ds.WindowCenter = datamean
         ds.WindowWidth = datamax - datamin
+
+        for k in attrs:
+            setattr(ds, k, attrs[k])
 
         validate_dataset(ds)
 
