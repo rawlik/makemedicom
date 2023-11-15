@@ -77,6 +77,21 @@ def normalise_for_dicom(
     else:
         return 1, 0, np.array(a).astype(dtype)
 
+class Series:
+    def __init__(
+        self,
+        description: str = "",
+        seriesnumber: str = "1",
+    ) -> None:
+        self.SeriesDescription = description
+        self.SeriesInstanceUID = pydicom.uid.generate_uid()
+        self.SeriesNumber = seriesnumber
+
+    def set_in_dataset(self, ds: pydicom.Dataset):
+        ds.SeriesDescription = self.SeriesDescription
+        ds.SeriesInstanceUID = self.SeriesInstanceUID
+        ds.SeriesNumber = self.SeriesNumber
+
 
 class Study:
     def __init__(
@@ -110,22 +125,6 @@ class Study:
         self.series.append(series)
 
         return series
-
-
-class Series:
-    def __init__(
-        self,
-        description: str = "",
-        seriesnumber: str = "1",
-    ) -> None:
-        self.SeriesDescription = description
-        self.SeriesInstanceUID = pydicom.uid.generate_uid()
-        self.SeriesNumber = seriesnumber
-
-    def set_in_dataset(self, ds: pydicom.Dataset):
-        ds.SeriesDescription = self.SeriesDescription
-        ds.SeriesInstanceUID = self.SeriesInstanceUID
-        ds.SeriesNumber = self.SeriesNumber
 
 
 def create_dicom_dataset(ds: pydicom.dataset.Dataset = None):
