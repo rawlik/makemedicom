@@ -8,6 +8,7 @@ import importlib.metadata
 
 import numpy as np
 import h5py
+import tifffile
 import pydicom
 import pydicom.fileset
 from pydicom.pixel_data_handlers.util import apply_modality_lut
@@ -369,6 +370,131 @@ def volume_to_dicom(
     return datasets
 
 
+def array2dicom(
+    d: np.ndarray,
+    objectoutpath,
+    dtype = None, 
+    study: Study = None,
+    series: Series = None,
+    fileset: pydicom.fileset.FileSet = None,
+    **attrs,
+):
+    if dtype is None:
+        dtype = d.dtype
+
+    if len(d.shape) == 2:
+        image_to_dicom(
+            d,
+            dtype,
+            objectoutpath + ".dcm",
+            series=series,
+            study=study,
+            fileset=fileset,
+            **attrs
+        )
+
+    elif len(d.shape) == 3:
+        if fileset is None:
+            os.makedirs(objectoutpath, exist_ok=True)
+        # we need to read the whole array to know the
+        # minimum and maximum values
+        volume_to_dicom(
+            d[...],
+            dtype,
+            objectoutpath,
+            series=series,
+            study=study,
+            fileset=fileset,
+            **attrs
+        )
+
+
+def process_file(
+    filename,
+    fileoutpath,
+    dtype: np.dtype,
+    file2study,
+    study: Study = None,
+    series: Series = None,
+    fileset: pydicom.fileset.FileSet = None,
+    **attrs,
+):
+    dirname = os.path.dirname(filename)
+    basename = os.path.basename(filename)
+
+    if file2study:
+        study = Study(description=basename)
+
+    if "." in basename:
+        fbasename, _, extension = basename.rpartition(".")
+    else:
+        logging.error(f"The file has no extension: {filename}")
+        exit(1)
+
+    if fileset is None:
+        os.makedirs(fileoutpath, exist_ok=True)
+
+    if extension in ["h5", "hdf5", "n5"]:
+        def visit_hdf5_object(name, d):
+            if isinstance(d, h5py.Dataset):
+                logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
+                objectoutpath = os.path.join(fileoutpath, name)
+
+                if series is None:
+                    series = study.add_series(description=basename)
+                    series.SeriesDescription += "/"
+                    series.SeriesDescription += name
+                
+                logging.info(f"Writing array of shape {d.shape}: {filename}/{name}...")
+                array2dicom(
+                    d=d,
+                    dtype=dtype,
+                    objectoutpath=objectoutpath,
+                    study=study,
+                    series=series,
+                    fileset=fileset,
+                    **attrs
+                )
+
+        with h5py.File(filename, "r") as file:
+            file.visititems(visit_hdf5_object)
+    elif extension in ["dcm"]:
+        ds = pydicom.dcmread(filename)
+
+        if series is None:
+            series = study.add_series(description=os.path.basename(filename))
+
+        dicom_to_dicom(
+            ds=ds,
+            filename=fileoutpath + ".dcm",
+            study=study,
+            series=series,
+            fileset=fileset,
+            dtype=dtype,
+            **attrs
+        )
+
+        if fileset is not None:
+            fileset.add(ds)
+    elif extension in ["tif", "tiff"]:
+        d = tifffile.imread(filename)
+        logging.debug(f"Found tiff image with shape: {d.shape}")
+
+        if series is None:
+            series = study.add_series(description=name)
+
+        logging.info(f"Writing {d.shape} array {filename}...")
+        array2dicom(
+            d=d,
+            dtype=dtype,
+            objectoutpath=os.path.join(fileoutpath, fbasename),
+            study=study,
+            series=series,
+            fileset=fileset,
+            **attrs
+        )
+
+
 def process_files(
     files,
     outpath,
@@ -388,82 +514,66 @@ def process_files(
     else:
         fileset = None
 
-    for filename in files:
-        logging.info(f"Processing file {filename}")
+    nfiles = len(files)
+
+    for ifile, filename in enumerate(files):
+        logging.info(f"Processing file {ifile + 1}/{nfiles} : {filename}")
         dirname = os.path.dirname(filename)
         basename = os.path.basename(filename)
 
         if file2study:
             study = Study(description=basename)
 
-        if "." in basename:
-            fbasename, _, extension = basename.rpartition(".")
-        else:
-            logging.error(f"The file has no extension: {filename}")
-            exit(1)
+        isadirectory = os.path.isdir(filename)
 
-        fileoutpath = os.path.join(outpath, fbasename)
+        if not isadirectory:
+            if "." in basename:
+                fbasename, _, extension = basename.rpartition(".")
+            else:
+                logging.error(f"The file has no extension: {filename}")
+                exit(1)
+            fileoutpath = os.path.join(outpath, fbasename)
+        else:
+            fileoutpath = os.path.join(outpath, basename)
 
         if not create_fileset:
             os.makedirs(fileoutpath, exist_ok=True)
 
-        if extension in ["h5", "hdf5", "n5"]:
+        # directory case
+        if isadirectory:
+            logging.info(f"{filename} is a directory, creating a series for it.")
+            series = study.add_series(description=basename)
 
-            def visit_hdf5_object(name, d):
-                if isinstance(d, h5py.Dataset):
-                    logging.debug(f"Found dataset: {name} {d.shape} {d.dtype}")
-                    objectoutpath = os.path.join(fileoutpath, name)
+            ffilelist = [ f for f in os.listdir(filename) ]
+            # skip directories
+            ffilelist = [ f for f in ffilelist if not os.path.isdir(f) ]
+            # skip files starting with '.'
+            ffilelist = [ f for f in ffilelist if f[0] != "." ]
+            ffilelist.sort()
 
-                    series = study.add_series(description=basename)
-                    series.SeriesDescription += "/"
-                    series.SeriesDescription += name
-
-                    if len(d.shape) == 2:
-                        logging.info(f"Writing image {filename}/{name}")
-                        image_to_dicom(
-                            d,
-                            dtype,
-                            objectoutpath + ".dcm",
-                            series=series,
-                            study=study,
-                            fileset=fileset,
-                        )
-
-                    elif len(d.shape) == 3:
-                        logging.info(f"Writing volume {filename}/{name}")
-                        if not create_fileset:
-                            os.makedirs(objectoutpath, exist_ok=True)
-                        # we need to read the whole array to know the
-                        # minimum and maximum values
-                        volume_to_dicom(
-                            d[...],
-                            dtype,
-                            objectoutpath,
-                            series=series,
-                            study=study,
-                            fileset=fileset,
-                        )
-
-            with h5py.File(filename, "r") as file:
-                file.visititems(visit_hdf5_object)
-        elif extension in ["dcm"]:
-            ds = pydicom.dcmread(filename)
-
-            series = study.add_series(description=os.path.basename(filename))
-
-            dicom_to_dicom(
-                ds=ds,
-                filename=fileoutpath + ".dcm",
-                study=study,
-                series=series,
-                fileset=fileset,
-                dtype=dtype,
-            )
-
-            if fileset is not None:
-                fileset.add(ds)
+            nffiles = len(ffilelist)
+            for iffilename, ffilename in enumerate(ffilelist):
+                logging.info(f"Processing file {iffilename + 1}/{nffiles} in {basename}: {ffilename}")
+                process_file(
+                    filename=os.path.join(filename, ffilename),
+                    fileoutpath=fileoutpath,
+                    dtype=dtype,
+                    file2study=file2study,
+                    study=study,
+                    series=series,
+                    fileset=fileset,
+                    InstanceNumber=iffilename + 1
+                )
         else:
-            logging.error(f"File format {extension} not implemented.")
+            process_file(
+                filename=filename,
+                fileoutpath=fileoutpath,
+                dtype=dtype,
+                file2study=file2study,
+                study=study,
+                series=None,
+                fileset=fileset
+            )
 
     if create_fileset:
         filesetpath = outpath
@@ -474,7 +584,7 @@ def process_files(
 def entrypoint():
     parser = argparse.ArgumentParser(
         prog="makemedicom",
-        description="Converts image files to DICOM. At the moment the following input formats are supported: hdf5.",
+        description="Converts image files to DICOM. At the moment the following input formats are supported: hdf5, tiff, dicom.",
     )
 
     parser.add_argument(
