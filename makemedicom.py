@@ -546,7 +546,7 @@ def process_files(
 
             ffilelist = [ f for f in os.listdir(filename) ]
             # skip directories
-            ffilelist = [ f for f in ffilelist if not os.path.isdir(f) ]
+            ffilelist = [ f for f in ffilelist if not os.path.isdir(os.path.join(filename, f)) ]
             # skip files starting with '.'
             ffilelist = [ f for f in ffilelist if f[0] != "." ]
             ffilelist.sort()

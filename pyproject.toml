@@ -1,7 +1,7 @@
 [project]
 name = "makemedicom"
 readme = "README.md"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = ["numpy==1.*", "pydicom==2.4.2", "h5py==3.9.0", "tifffile"]
 
 [tool.setuptools]
