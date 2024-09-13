@@ -1,8 +1,8 @@
 [project]
 name = "makemedicom"
 readme = "README.md"
-version = "0.0.5"
-dependencies = ["numpy", "pydicom==2.4.2", "h5py==3.9.0"]
+version = "0.0.6"
+dependencies = ["numpy==1.*", "pydicom==2.4.2", "h5py==3.9.0"]
 
 [tool.setuptools]
 py-modules = ["makemedicom"]
